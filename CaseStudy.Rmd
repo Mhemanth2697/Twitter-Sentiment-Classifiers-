@@ -1,0 +1,278 @@
+---
+title: "proj1"
+author: "Group 24"
+date: "22/03/2020"
+output: pdf_document
+---
+
+```{r }
+library(caret)
+library(gmodels)
+library(forecast)
+library(ggplot2)
+library(stringr)
+library(readr)
+library(dplyr)
+library(tm)
+library(SnowballC)
+library(randomForest)
+library(neuralnet)
+library(e1071)
+library(MASS)
+library(ROCR)
+library(rpart)
+library(rpart.plot)
+
+
+```
+```{r }
+txtprproc <- function(x){
+  
+x <- Corpus(VectorSource(x))  # Converting to Corpus
+x <- tm_map(x,PlainTextDocument)  # Plain Text Document creation
+x <- tm_map(x,tolower)  # Converting the data to lower case.
+x <- tm_map(x,removePunctuation)  # Removing Punctuation
+x <- tm_map(x,removeWords,c(stopwords(kind = "en"))) # Removing unnecessary stopwords.
+x <- tm_map(x,stemDocument)  # Creating stems of words to remove inflections.
+return(x)
+}
+```
+
+
+
+
+```{r }
+twts <- read.csv("Tweets.csv")
+
+x1 <- summary(twts$airline)
+x1 <- data.frame(x1)
+x1$Airlines <- rownames(x1)
+rownames(x1) <- c(1,2,3,4,5,6)
+x1 <- x1[,c("Airlines","x1")]
+colnames(x1)<- c("Airlines","Count")
+barplot(x1$Count,names.arg = c("American","Delta","Southwest","United","US Airways","Virgin America"))
+head(x1)
+
+
+
+
+```
+
+
+```{r }
+
+
+twts <- twts[,c("tweet_id","airline_sentiment","airline","text")]
+
+twtscorp <- txtprproc(twts$text)
+
+
+twtscorpfrq <- DocumentTermMatrix(twtscorp)
+twtscorpfrq <- removeSparseTerms(twtscorpfrq,0.995)
+twtscorpfrqdf <- as.data.frame(as.matrix(twtscorpfrq))
+
+colnames(twtscorpfrqdf) = make.names(colnames(twtscorpfrqdf))
+twtscorpfrqdf$sent <- twts$airline_sentiment
+
+twtscorpfrqdf$sent <- factor(twtscorpfrqdf$sent,levels = c("negative","neutral","positive"),labels = c(1,0,0))
+
+twtscorpfrqdf$virginamerica = NULL
+twtscorpfrqdf$delta = NULL
+twtscorpfrqdf$southwest = NULL
+twtscorpfrqdf$southwestair = NULL
+twtscorpfrqdf$american = NULL
+twtscorpfrqdf$americanair = NULL
+twtscorpfrqdf$usairway = NULL
+twtscorpfrqdf$jetblu = NULL
+twtscorpfrqdf$â.œjetblu = NULL
+
+
+
+set.seed(100)
+sample <- sample.int(n = nrow(twtscorpfrqdf),size = floor(0.6*nrow(twtscorpfrqdf)),replace = FALSE)
+tr1 <- twtscorpfrqdf[sample,]
+te1 <- twtscorpfrqdf[-sample,]
+
+
+
+prop.table(table(te1$sent))
+```
+
+
+
+Logistic Regression
+
+```{r }
+logrgrfit <- glm(sent~.,data = tr1,family = binomial(link = "logit"))
+
+logrgrpred <- predict(logrgrfit,te1,type = "response")
+
+logrgrclpred <- ifelse(logrgrpred > 0.5,1,0)
+confusionMatrix(factor(logrgrclpred),te1$sent)
+
+```
+
+
+KNN - This will take about 20-22 minutes to train.
+```{r }
+
+ktr1_lbls <- tr1$sent
+knntr1 <- tr1
+knntr1$sent <- NULL
+kte1_lbls <- te1$sent
+knnte1 <- te1
+knnte1$sent <- NULL
+knnclass <- train(knntr1,ktr1_lbls,method = "knn")
+plot(knnclass)
+knnpredte1 <- predict(knnclass,knnte1)
+confusionMatrix(factor(knnpredte1),kte1_lbls)
+
+
+```
+
+Decision Tree
+```{r }
+dtfit <- rpart(sent~.,data = tr1,method = "class")
+dtpred <- predict(dtfit,te1,type = "prob")
+dtclpred <- predict(dtfit,te1,type = "class")
+rpart.plot(dtfit)
+confusionMatrix(dtclpred,te1$sent)
+
+```
+DT ROC
+```{r }
+dtpred <- data.frame(dtpred)
+dtperf <- prediction(dtpred$X1,te1$sent)
+plot(performance(dtperf,"tpr","fpr"))
+abline(a=0,b=1)
+
+```
+
+
+
+Random Forest
+```{r }
+rffit <- randomForest(sent~.,data = tr1)
+rfpred <- predict(rffit,te1,type = "prob")
+rfclpred <- predict(rffit,te1,type = "class")
+confusionMatrix(rfclpred,te1$sent)
+```
+RF Roc
+```{r }
+rfpred <- data.frame(rfpred)
+rfperf <- prediction(rfpred$X1,te1$sent)
+plot(performance(rfperf,"tpr","fpr"))
+abline(a=0,b=1)
+
+```
+
+
+Neural Nets
+```{r }
+twtsnn <- twtscorpfrqdf
+twtsnn$negative<-twtsnn$sent==0
+twtsnn$positive<-twtsnn$sent==1
+set.seed(100)
+sample <- sample.int(n = nrow(twtsnn),size = floor(0.6*nrow(twtsnn)),replace = FALSE)
+tr1nn <- twtsnn[sample,]
+te1nn <- twtsnn[-sample,]
+```
+
+```{r }
+twitter.nn <- neuralnet(negative+positive~., data = tr1nn[,-which(names(tr1nn)=="sent")], 
+                linear.output = F, hidden = 2)
+twitter.nn.predict <- compute(twitter.nn, te1nn[,-which(names(te1nn)=="sent" |names(te1nn)=="negative"|names(te1nn)=="positive")])
+predicted.class=apply(twitter.nn.predict$net.result,1,which.max)-1
+df<-as.factor(predicted.class)
+confusionMatrix(df, te1nn$sent)
+```
+
+NN Roc
+```{r }
+nnpred <- predict(twitter.nn,te1,type = "class")
+nnpred <- data.frame(nnpred)
+nnperf <- prediction(nnpred$X2,te1$sent)
+plot(performance(nnperf,"tpr","fpr"))
+abline(a=0,b=1)
+
+```
+
+
+SVM
+```{r }
+twitter.svm <- svm(tr1[,-which(names(tr1)=="sent")], tr1[,which(names(tr1)=="sent")],probability = TRUE)
+twitter.svm.pred <- predict(twitter.svm, te1[,-which(names(te1)=="sent")])
+confusionMatrix(te1$sent,twitter.svm.pred)
+
+```
+SVM Roc
+```{r }
+svmprob <- predict(twitter.svm,te1[,-which(names(te1)=="sent")],probability = TRUE)
+svmprob <- attr(svmprob,"probabilities")
+svmprob <- data.frame(svmprob1)
+
+svmperf <- prediction(svmprob$X1,te1$sent)
+plot(performance(svmperf,"tpr","fpr"))
+abline(a=0,b=1)
+
+
+
+
+
+```
+
+LDA
+```{r }
+twittet.lda <- lda(sent~., tr1)
+twittet.lda.predict <- predict(twittet.lda, te1[,-which(names(te1)=="sent")])
+prediction<-as.factor(twittet.lda.predict$class)
+confusionMatrix(te1$sent,prediction)
+
+
+
+
+```
+
+
+
+LDA ROC
+```{r }
+ldaprob <- data.frame(twittet.lda.predict$posterior)
+ldaperf <- prediction(ldaprob$X1,te1$sent)
+plot(performance(ldaperf,"tpr","fpr"))
+abline(a=0,b=1)
+
+```
+
+ROC
+```{r  }
+par(mfrow = c(2,3))
+plot(performance(dtperf,"tpr","fpr"),main = "Decison Tree")
+abline(a=0,b=1)
+plot(performance(rfperf,"tpr","fpr"),main = "Random Forest")
+abline(a=0,b=1)
+plot(performance(nnperf,"tpr","fpr"),main = "Neural Net")
+abline(a=0,b=1)
+plot(performance(svmperf,"tpr","fpr"),main = "SVM")
+abline(a=0,b=1)
+plot(performance(ldaperf,"tpr","fpr"),main = "LDA")
+abline(a=0,b=1)
+
+```
+
+
+AUC
+```{r }
+nnauc <- performance(nnperf,measure = "auc")
+svmauc <- performance(svmperf,measure = "auc")
+ldaauc <- performance(ldaperf,measure = "auc")
+dtauc <- performance(dtperf,measure = "auc")
+rfauc <- performance(rfperf,measure = "auc")
+
+cat("AUC Values")
+cat("\nNeural Net = ",nnauc@y.values[[1]])
+cat("\nSVM = ",svmauc@y.values[[1]])
+cat("\nLDA = ",ldaauc@y.values[[1]])
+cat("\nDecision Tree = ",dtauc@y.values[[1]])
+cat("\nRandom Forest = ",rfauc@y.values[[1]])
+```
